@@ -1,5 +1,8 @@
 const ALLOWED_ORIGIN = process.env.DRIFTIT_ORIGIN || "*";
 
+// Your eBay Partner Network campaign ID
+const EPN_CAMPAIGN_ID = "5339217456";
+
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -34,9 +37,7 @@ function itemId(input) {
 
     const q = u.searchParams.get("item");
 
-    if (q && /^\d{9,15}$/.test(q)) {
-      return q;
-    }
+    if (q && /^\d{9,15}$/.test(q)) return q;
   } catch {}
 
   return null;
@@ -56,12 +57,10 @@ async function getToken(base, clientId, clientSecret) {
     `${base}/identity/v1/oauth2/token`,
     {
       method: "POST",
-
       headers: {
         Authorization: `Basic ${credentials}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
-
       body: body.toString()
     }
   );
@@ -89,10 +88,19 @@ async function getListing(
     `${base}/buy/browse/v1/item/get_item_by_legacy_id` +
     `?legacy_item_id=${encodeURIComponent(legacyId)}`;
 
+  // Custom ID lets us identify the individual listing
+  // inside eBay Partner Network reporting.
+  const customId = `DRIFTIT-${legacyId}`;
+
+  const endUserContext =
+    `affiliateCampaignId=${EPN_CAMPAIGN_ID},` +
+    `affiliateReferenceId=${customId}`;
+
   const response = await fetch(url, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "X-EBAY-C-MARKETPLACE-ID": marketplace,
+      "X-EBAY-C-ENDUSERCTX": endUserContext,
       Accept: "application/json"
     }
   });
@@ -112,7 +120,6 @@ async function getListing(
 }
 
 module.exports = async function handler(req, res) {
-
   cors(res);
 
   if (req.method === "OPTIONS") {
@@ -125,16 +132,12 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  const clientId =
-    process.env.EBAY_CLIENT_ID;
-
-  const clientSecret =
-    process.env.EBAY_CLIENT_SECRET;
+  const clientId = process.env.EBAY_CLIENT_ID;
+  const clientSecret = process.env.EBAY_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
     return res.status(500).json({
-      error:
-        "Missing EBAY_CLIENT_ID or EBAY_CLIENT_SECRET."
+      error: "Missing EBAY_CLIENT_ID or EBAY_CLIENT_SECRET."
     });
   }
 
@@ -149,29 +152,25 @@ module.exports = async function handler(req, res) {
 
   if (!legacyId) {
     return res.status(400).json({
-      error:
-        "Paste a valid eBay URL or numeric eBay item ID."
+      error: "Paste a valid eBay URL or numeric eBay item ID."
     });
   }
 
   try {
-
     const ebay = config();
 
-    const accessToken =
-      await getToken(
-        ebay.base,
-        clientId,
-        clientSecret
-      );
+    const accessToken = await getToken(
+      ebay.base,
+      clientId,
+      clientSecret
+    );
 
-    const item =
-      await getListing(
-        ebay.base,
-        ebay.marketplace,
-        accessToken,
-        legacyId
-      );
+    const item = await getListing(
+      ebay.base,
+      ebay.marketplace,
+      accessToken,
+      legacyId
+    );
 
     const additionalImages =
       Array.isArray(item.additionalImages)
@@ -193,12 +192,10 @@ module.exports = async function handler(req, res) {
             array.indexOf(value) === index
         );
 
+    const customId = `DRIFTIT-${legacyId}`;
+
     return res.status(200).json({
-
-      id:
-        item.itemId ||
-        `EBAY-${legacyId}`,
-
+      id: item.itemId || `EBAY-${legacyId}`,
       legacyId,
 
       title:
@@ -225,13 +222,22 @@ module.exports = async function handler(req, res) {
       seller:
         item.seller?.username || "",
 
-      image:
-        mainImage,
-
+      image: mainImage,
       images,
 
+      // Standard eBay listing URL
       itemWebUrl:
         item.itemWebUrl || "",
+
+      // EPN affiliate-tracked URL returned by eBay
+      itemAffiliateWebUrl:
+        item.itemAffiliateWebUrl || "",
+
+      epnCampaignId:
+        EPN_CAMPAIGN_ID,
+
+      epnCustomId:
+        customId,
 
       category:
         item.categoryPath || "",
@@ -239,18 +245,15 @@ module.exports = async function handler(req, res) {
       environment:
         (process.env.EBAY_ENVIRONMENT || "sandbox")
           .toLowerCase()
-
     });
 
   } catch (error) {
-
     console.error(
       "DRIFTiT eBay importer error:",
       error
     );
 
     return res.status(502).json({
-
       error:
         error?.message ||
         "Unable to import the eBay listing.",
@@ -258,7 +261,6 @@ module.exports = async function handler(req, res) {
       environment:
         (process.env.EBAY_ENVIRONMENT || "sandbox")
           .toLowerCase()
-
     });
   }
 };
