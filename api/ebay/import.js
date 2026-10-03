@@ -1,7 +1,7 @@
 driftit-garage/
 │
-├── index.html          ← KEEP THIS (your website)
+├── index.html
 │
 └── api/
     └── ebay/
-        └── import.js   ← ADD THIS
+        └── import.js
