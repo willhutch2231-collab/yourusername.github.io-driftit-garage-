@@ -43,7 +43,7 @@ async function getToken() {
     throw new Error(
       data.error_description ||
       data.error ||
-      "eBay OAuth failed."
+      `eBay OAuth failed: HTTP ${response.status}`
     );
   }
 
@@ -51,6 +51,8 @@ async function getToken() {
 }
 
 function getLegacyId(item) {
+  // Browse API item IDs often look like:
+  // v1|123456789012|0
   const itemIdMatch = String(item.itemId || "").match(
     /\|(\d{9,15})\|/
   );
@@ -59,6 +61,7 @@ function getLegacyId(item) {
     return itemIdMatch[1];
   }
 
+  // Fallback: get the item number from the listing URL.
   const urlMatch = String(item.itemWebUrl || "").match(
     /\/itm\/(?:[^/]+\/)?(\d{9,15})/
   );
@@ -75,6 +78,7 @@ module.exports = async function handler(req, res) {
 
   if (req.method !== "GET") {
     return res.status(405).json({
+      success: false,
       error: "Use GET."
     });
   }
@@ -82,38 +86,45 @@ module.exports = async function handler(req, res) {
   try {
     const accessToken = await getToken();
 
-    const customId = "DRIFTIT-STOCK";
+    /*
+      Search eBay Motors Parts & Accessories,
+      but only return listings from driftitautoparts.
 
+      This replaces the old q:"*" search that caused:
+      "This keyword search results in a response that is too large..."
+    */
     const params = new URLSearchParams({
-      q: "*",
+      category_ids: "6030",
       filter: `sellers:{${SELLER}}`,
       sort: "newlyListed",
       limit: "12"
     });
 
     const response = await fetch(
-      `https://api.ebay.com/buy/browse/v1/item_summary/search?${params}`,
+      `https://api.ebay.com/buy/browse/v1/item_summary/search?${params.toString()}`,
       {
+        method: "GET",
         headers: {
           Authorization: `Bearer ${accessToken}`,
+
           "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
 
           "X-EBAY-C-ENDUSERCTX":
             `affiliateCampaignId=${EPN_CAMPAIGN_ID},` +
-            `affiliateReferenceId=${customId}`,
+            `affiliateReferenceId=DRIFTIT-STOCK`,
 
           Accept: "application/json"
         }
       }
     );
 
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
       const message =
         data?.errors?.[0]?.longMessage ||
         data?.errors?.[0]?.message ||
-        `eBay search failed: ${response.status}`;
+        `eBay search failed: HTTP ${response.status}`;
 
       throw new Error(message);
     }
@@ -124,9 +135,12 @@ module.exports = async function handler(req, res) {
 
         const images = [
           item.image?.imageUrl,
-          ...(item.thumbnailImages || []).map(
-            image => image.imageUrl
-          )
+
+          ...(Array.isArray(item.thumbnailImages)
+            ? item.thumbnailImages.map(
+                image => image.imageUrl
+              )
+            : [])
         ]
           .filter(Boolean)
           .filter(
@@ -135,7 +149,9 @@ module.exports = async function handler(req, res) {
           );
 
         return {
-          id: item.itemId || legacyId,
+          id:
+            item.itemId ||
+            `EBAY-${legacyId}`,
 
           legacyId,
 
@@ -156,11 +172,17 @@ module.exports = async function handler(req, res) {
           condition:
             item.condition || "",
 
+          conditionId:
+            item.conditionId || "",
+
           seller:
-            item.seller?.username || SELLER,
+            item.seller?.username ||
+            SELLER,
 
           image:
-            item.image?.imageUrl || "",
+            item.image?.imageUrl ||
+            images[0] ||
+            "",
 
           images,
 
@@ -170,11 +192,18 @@ module.exports = async function handler(req, res) {
           itemAffiliateWebUrl:
             item.itemAffiliateWebUrl || "",
 
+          category:
+            item.categories?.[0]?.categoryName ||
+            "",
+
           environment: "production"
         };
       })
 
-      // Never display our old Sandbox test listing.
+      // Remove anything without a usable eBay item ID.
+      .filter(item => item.legacyId)
+
+      // Permanently exclude the old Sandbox test listing.
       .filter(
         item =>
           item.legacyId !== "110590958349"
@@ -182,19 +211,25 @@ module.exports = async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
+
       seller: SELLER,
+
       count: items.length,
+
       items
     });
 
   } catch (error) {
     console.error(
-      "DRIFTiT stock error:",
+      "DRIFTiT automatic stock error:",
       error
     );
 
     return res.status(502).json({
       success: false,
+
+      seller: SELLER,
+
       error:
         error?.message ||
         "Unable to load DRIFTiT stock."
